@@ -1,6 +1,8 @@
-name = "my-m3u8-proxy"
+name = "m3u8-proxy-pro"
 main = "src/index.js"
 compatibility_date = "2024-01-01"
 
-# আপনি চাইলে নিচের অংশটি রিমুভ করতে পারেন যদি ফ্রি ভার্সন ব্যবহার করেন
-# workers_dev = true
+# KV ডাটাবেস কানেক্ট করা
+[[kv_namespaces]]
+binding = "CHANNELS1"
+id = "cb59e2229bfd44f6b70e106c76790bc1"
