@@ -1,96 +1,102 @@
 // অ্যাডমিন প্যানেলে ঢোকার পাসওয়ার্ড
-const ADMIN_PASSWORD = "15"; 
+const ADMIN_PASSWORD = "12345"; 
 
 export default {
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
 
     // ================================================================
-    // ১. অ্যাডমিন প্যানেল এবং API
+    // ১. অ্যাডমিন প্যানেল এবং API (আগের মতোই)
     // ================================================================
     
     if (url.pathname === '/admin') {
       return handleAdminPage(request);
     }
-
     if (url.pathname === '/api/add' && request.method === 'POST') {
       return handleAddChannel(request, env);
     }
-
     if (url.pathname === '/api/delete' && request.method === 'POST') {
       return handleDeleteChannel(request, env);
     }
-
     if (url.pathname === '/api/list') {
       return handleListChannels(env);
     }
 
     // ================================================================
-    // ২. ভিডিও স্ট্রিমিং লজিক (সংশোধিত)
+    // ২. ভিডিও স্ট্রিমিং লজিক (সম্পূর্ণ নতুন এবং শক্তিশালী)
     // ================================================================
     
     if (url.pathname.startsWith('/play/')) {
       const parts = url.pathname.split('/');
       const channelName = parts[2];
       
-      // relativePath ঠিকভাবে বের করা (স্ল্যাশ সহ হ্যান্ডেল করার জন্য)
+      // বাকী অংশটুকু (যেমন: tracks-v1a1/mono.ts.m3u8)
       const relativePath = parts.slice(3).join('/'); 
 
-      const originalBaseUrl = await env.CHANNELS1.get(channelName);
+      // ১. আসল মেইন লিংকটি ডাটাবেস থেকে আনা
+      const rootUrlStr = await env.CHANNELS1.get(channelName);
 
-      if (!originalBaseUrl) {
-        return new Response("Channel not found.", { status: 404 });
+      if (!rootUrlStr) {
+        return new Response("Channel not found in Database.", { status: 404 });
       }
 
+      // ২. টার্গেট URL তৈরি করা (যেটা আমরা এখন ফেচ করব)
       let targetUrl;
+      let rootBase; // এটি মেইন ফোল্ডারের ঠিকানা
+
       try {
+        const rootObj = new URL(rootUrlStr);
+        // মেইন লিংকের বেস পাথ বের করা (যেমন: http://site.com/folder/)
+        rootBase = rootObj.href.substring(0, rootObj.href.lastIndexOf('/') + 1);
+
         if (!relativePath) {
-            targetUrl = originalBaseUrl;
+            // যদি সরাসরি চ্যানেল প্লে করা হয়
+            targetUrl = rootUrlStr;
         } else {
-            const baseObj = new URL(originalBaseUrl);
-            const basePath = baseObj.href.substring(0, baseObj.href.lastIndexOf('/') + 1);
-            targetUrl = new URL(relativePath, basePath).href;
+            // যদি ভেতরের কোনো ফাইল চাওয়া হয়, তাহলে মেইন বেস-এর সাথে জোড়া লাগানো
+            targetUrl = new URL(relativePath, rootBase).href;
         }
       } catch (e) {
-        return new Response("URL Error", { status: 500 });
+        return new Response("Invalid URL Configuration", { status: 500 });
       }
 
+      // ৩. অরিজিনাল সার্ভার থেকে ডাটা আনা
       try {
         const response = await fetch(targetUrl, {
           headers: {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
             'Referer': new URL(targetUrl).origin
           }
         });
 
-        // যদি M3U8 ফাইল হয়, তবে লিংক রিরাইট করতে হবে
-        if (targetUrl.includes('.m3u8') || response.headers.get('Content-Type')?.includes('mpegurl')) {
+        if (!response.ok) {
+            return new Response(`Source Error: ${response.status}`, { status: response.status });
+        }
+
+        // ৪. যদি M3U8 ফাইল হয়, তবে রিরাইট (Rewrite) করতে হবে
+        if (targetUrl.includes('.m3u8') || response.headers.get('Content-Type')?.includes('mpegurl') || response.headers.get('Content-Type')?.includes('application/x-mpegURL')) {
+          
           let m3u8Text = await response.text();
           
-          // বর্তমান পাথ বা ডিরেক্টরি বের করা হচ্ছে
-          let currentPathDir = '';
-          if (relativePath && relativePath.includes('/')) {
-             currentPathDir = relativePath.substring(0, relativePath.lastIndexOf('/') + 1);
-          }
-
-          // রিরাইট ফাংশনে বর্তমান ডিরেক্টরি পাঠানো হচ্ছে
-          m3u8Text = rewriteM3u8(m3u8Text, url.origin, channelName, currentPathDir);
+          // এখানে ম্যাজিক ফাংশন কল করা হচ্ছে
+          m3u8Text = rewriteM3u8(m3u8Text, url.origin, channelName, targetUrl, rootBase);
 
           return new Response(m3u8Text, {
             headers: {
               'Content-Type': 'application/vnd.apple.mpegurl',
-              'Access-Control-Allow-Origin': '*'
+              'Access-Control-Allow-Origin': '*',
+              'Cache-Control': 'no-cache'
             }
           });
         }
 
-        // TS বা অন্য ফাইলের জন্য সরাসরি রেসপন্স
+        // ৫. যদি .ts বা অন্য ফাইল হয়, সরাসরি দিয়ে দেওয়া হবে
         const newRes = new Response(response.body, response);
         newRes.headers.set('Access-Control-Allow-Origin', '*');
         return newRes;
 
       } catch (e) {
-        return new Response("Error fetching stream", { status: 500 });
+        return new Response(`Worker Error: ${e.message}`, { status: 500 });
       }
     }
 
@@ -98,30 +104,47 @@ export default {
   }
 };
 
-// ================= HELPER FUNCTIONS (সংশোধিত) =================
+// ================= HELPER FUNCTIONS (নতুন লজিক) =================
 
-function rewriteM3u8(content, workerOrigin, channelName, pathPrefix) {
+function rewriteM3u8(content, workerOrigin, channelName, currentFileUrl, rootBaseUrl) {
   const lines = content.split('\n');
   const newLines = lines.map(line => {
+    // স্পেস বা অপ্রয়োজনীয় ক্যারেক্টার রিমুভ (খুবই জরুরি)
     line = line.trim();
     if (!line) return line;
     
-    // যদি লাইনটি কমেন্ট না হয় (# দিয়ে শুরু না হয়)
-    if (!line.startsWith('#')) {
-      // যদি লাইনটি ইতিমধ্যে http দিয়ে শুরু হয় (Absolute URL), তবে সেটা হ্যান্ডেল করার লজিক (অপশনাল, এখানে সরল রাখা হলো)
-      if(line.startsWith('http')) {
-          return `${workerOrigin}/play/${channelName}/${line}`; // এটি সাধারণত এনকোড করা প্রয়োজন, তবে সিম্পল প্রক্সিতে এভাবেও চলতে পারে
-      }
-      
-      // রিলেটিভ পাথের সাথে আগের ফোল্ডার (pathPrefix) যুক্ত করা হচ্ছে
-      return `${workerOrigin}/play/${channelName}/${pathPrefix}${line}`;
+    // কমেন্ট লাইন বা ট্যাগ ইগনোর করা
+    if (line.startsWith('#')) {
+      return line;
     }
-    return line;
+
+    // লজিক: লাইনের লিংকটি যেখানেই থাক, সেটার "আসল পূর্ণ ঠিকানা" (Absolute URL) বের করা
+    try {
+        const absoluteUrl = new URL(line, currentFileUrl).href;
+
+        // চেক করা: এই লিংকটি কি আমাদের মেইন সার্ভারের ভেতরেই আছে?
+        if (absoluteUrl.startsWith(rootBaseUrl)) {
+            // যদি ভেতরে থাকে, তাহলে "rootBaseUrl" বাদ দিয়ে বাকীটুকু (Relative Path) বের করা
+            const newRelativePath = absoluteUrl.replace(rootBaseUrl, '');
+            
+            // আমাদের প্রোক্সি লিংক তৈরি
+            return `${workerOrigin}/play/${channelName}/${newRelativePath}`;
+        } else {
+            // যদি অন্য কোনো সার্ভারে রিডাইরেক্ট করে (যেমন অন্য CDN), তাহলে সরাসরি সেই লিংক বসিয়ে দেওয়া
+            // এতে প্লেয়ার সরাসরি সেখান থেকে চালাবে (এতে ভিডিও লোড দ্রুত হয়)
+            return absoluteUrl;
+        }
+    } catch (e) {
+        return line; // কোনো সমস্যা হলে যা আছে তাই থাকবে
+    }
   });
   return newLines.join('\n');
 }
 
+// ================= ADMIN & API (অপরিবর্তিত) =================
+
 async function handleAdminPage(request) {
+    // আগের অ্যাডমিন কোডই থাকবে, এখানে চেঞ্জ নেই
     const html = `
     <!DOCTYPE html>
     <html>
@@ -143,26 +166,21 @@ async function handleAdminPage(request) {
     <body>
         <div class="container">
             <h2 style="text-align:center;">Stream Controller</h2>
-            
             <div id="loginSection">
                 <input type="password" id="pass" placeholder="Enter Password">
                 <button onclick="checkPass()">Login</button>
             </div>
-
             <div id="mainSection" class="hidden">
                 <h3>Add Channel</h3>
                 <input type="text" id="cName" placeholder="Name (e.g. sports)">
                 <input type="text" id="cUrl" placeholder="Original M3U8 Link">
                 <button onclick="addChannel()">Add Channel</button>
-
                 <h3 style="margin-top:20px;">Channel List</h3>
                 <div id="list">Loading...</div>
             </div>
         </div>
-
         <script>
             const API_PASS = "${ADMIN_PASSWORD}"; 
-
             function checkPass() {
                 if(document.getElementById('pass').value === API_PASS) {
                     document.getElementById('loginSection').classList.add('hidden');
@@ -170,36 +188,25 @@ async function handleAdminPage(request) {
                     loadChannels();
                 } else { alert('Wrong Password'); }
             }
-
             async function addChannel() {
                 const name = document.getElementById('cName').value.trim();
                 const url = document.getElementById('cUrl').value.trim();
                 if(!name || !url) return alert('Fill all fields');
-                
-                await fetch('/api/add', {
-                    method: 'POST',
-                    body: JSON.stringify({name, url})
-                });
+                await fetch('/api/add', { method: 'POST', body: JSON.stringify({name, url}) });
                 document.getElementById('cName').value = '';
                 document.getElementById('cUrl').value = '';
                 loadChannels();
             }
-
             async function deleteChannel(name) {
                 if(!confirm('Delete ' + name + '?')) return;
-                await fetch('/api/delete', {
-                    method: 'POST',
-                    body: JSON.stringify({name})
-                });
+                await fetch('/api/delete', { method: 'POST', body: JSON.stringify({name}) });
                 loadChannels();
             }
-
             async function loadChannels() {
                 const res = await fetch('/api/list');
                 const channels = await res.json();
                 const list = document.getElementById('list');
                 list.innerHTML = '';
-                
                 for (const [name, url] of Object.entries(channels)) {
                     const proxyLink = window.location.origin + '/play/' + name;
                     list.innerHTML += \`
@@ -219,22 +226,17 @@ async function handleAdminPage(request) {
     return new Response(html, { headers: { 'Content-Type': 'text/html' } });
 }
 
-// ================= API HANDLERS =================
-
 async function handleAddChannel(req, env) {
     const data = await req.json();
     await env.CHANNELS1.put(data.name, data.data || data.url);
     return new Response("Added");
 }
-
 async function handleDeleteChannel(req, env) {
     const data = await req.json();
     await env.CHANNELS1.delete(data.name);
     return new Response("Deleted");
 }
-
 async function handleListChannels(env) {
-    // এখানে ভুল ছিল 'constlist', ঠিক করা হলো 'const list'
     const list = await env.CHANNELS1.list();
     const channels = {};
     for(const key of list.keys) {
