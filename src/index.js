@@ -1,295 +1,244 @@
-// ১. অ্যাডমিন প্যানেলে লগইন করার পাসওয়ার্ড (প্রয়োজনে বদলে নিন)
-const ADMIN_PASSWORD = "12345"; 
+// ১. অ্যাডমিন প্যানেল পাসওয়ার্ড (প্রয়োজনে বদলে নিন)
+const ADMIN_PASSWORD = "123456";
 
 export default {
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
 
     // ================================================================
-    // সেকশন ১: অ্যাডমিন প্যানেল এবং API (লিংক সেভ/ডিলিট করার জন্য)
+    // লজিক ১: M3U প্লেলিস্ট জেনারেটর (ইউজার এই লিংকটি ব্যবহার করবে)
+    // লিংক: https://your-worker.dev/playlist.m3u
     // ================================================================
-    
-    // অ্যাডমিন পেজ শো করা
-    if (url.pathname === '/admin') {
-      return handleAdminPage(request);
-    }
-
-    // নতুন চ্যানেল সেভ করা
-    if (url.pathname === '/api/add' && request.method === 'POST') {
-      return handleAddChannel(request, env);
-    }
-
-    // চ্যানেল ডিলিট করা
-    if (url.pathname === '/api/delete' && request.method === 'POST') {
-      return handleDeleteChannel(request, env);
-    }
-
-    // সব চ্যানেলের লিস্ট দেখা
-    if (url.pathname === '/api/list') {
-      return handleListChannels(env);
+    if (url.pathname === '/playlist.m3u') {
+      return handlePlaylistGenerator(env, url.origin);
     }
 
     // ================================================================
-    // সেকশন ২: ভিডিও স্ট্রিমিং এবং প্রক্সি লজিক (Main Engine)
+    // লজিক ২: প্লেয়ার রিডাইরেক্ট সিস্টেম (Play System)
     // ================================================================
-    
-    // ফরম্যাট: https://worker-domain/play/[channel_name]/[file_path]
     if (url.pathname.startsWith('/play/')) {
-      const parts = url.pathname.split('/'); 
-      // parts[0]="", parts[1]="play", parts[2]="channelName", parts[3...]="path"
+      const channelId = url.pathname.split('/')[2]; // ID বের করা
+
+      // ডাটাবেস থেকে তথ্য আনা
+      const dataStr = await env.CHANNELS1.get(channelId);
+
+      if (!dataStr) {
+        return new Response("Channel not found or deleted.", { status: 404 });
+      }
+
+      const data = JSON.parse(dataStr);
       
-      const channelName = parts[2];
-      const relativePath = parts.slice(3).join('/'); 
-
-      // ১. ডাটাবেস (CHANNELS1) থেকে আসল লিংক খুঁজে বের করা
-      const originalBaseUrl = await env.CHANNELS1.get(channelName);
-
-      if (!originalBaseUrl) {
-        return new Response("Channel not found in database.", { status: 404 });
-      }
-
-      // ২. টার্গেট URL তৈরি করা (স্মার্ট পাথ ক্যালকুলেশন)
-      let targetUrl;
-      try {
-        // যদি ইউজার প্রথমবার হিট করে (কোনো পাথ নেই)
-        if (!relativePath) {
-            targetUrl = originalBaseUrl;
-        } else {
-            // যদি relativePath নিজেই একটি পূর্ণ লিংক হয় (যেমন M3U8 এর ভেতরে অন্য সার্ভারের লিংক থাকে)
-            if (relativePath.startsWith('http')) {
-                targetUrl = relativePath;
-            } else {
-                // রিলেটিভ পাথ জোড়া লাগানো
-                const baseObj = new URL(originalBaseUrl);
-                // বেস ফোল্ডার বের করা (যেমন: http://ip:port/path/)
-                const basePath = baseObj.href.substring(0, baseObj.href.lastIndexOf('/') + 1);
-                targetUrl = new URL(relativePath, basePath).href;
-            }
-        }
-      } catch (e) {
-        return new Response("URL Construction Error: " + e.message, { status: 500 });
-      }
-
-      // ৩. আসল সার্ভার থেকে ডাটা আনা (IP/Port ফিক্স সহ)
-      try {
-        const targetUrlObj = new URL(targetUrl);
-        
-        const response = await fetch(targetUrl, {
-          method: request.method,
-          headers: {
-            // আইপি সার্ভারগুলো যেন বুঝতে না পারে এটি বট
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-            'Accept': '*/*',
-            // আইপি প্যানেলগুলোর জন্য এটি সবচেয়ে জরুরি
-            'Host': targetUrlObj.host, 
-            'Connection': 'keep-alive',
-            // কিছু সার্ভার রেফারার চেক করে
-            'Referer': targetUrlObj.origin 
-          }
-        });
-
-        // ৪. যদি M3U8 ফাইল হয়, তবে লিংক হাইড করার জন্য রিরাইট করতে হবে
-        const contentType = response.headers.get('Content-Type');
-        if (targetUrl.includes('.m3u8') || (contentType && (contentType.includes('mpegurl') || contentType.includes('application/x-mpegURL')))) {
-          
-          let m3u8Text = await response.text();
-          
-          // রিরাইট ফাংশন কল করা
-          m3u8Text = rewriteM3u8(m3u8Text, url.origin, channelName);
-
-          return new Response(m3u8Text, {
-            headers: {
-              'Content-Type': 'application/vnd.apple.mpegurl',
-              'Access-Control-Allow-Origin': '*',
-              'Cache-Control': 'no-cache'
-            }
-          });
-        }
-
-        // ৫. যদি ভিডিও ফাইল (.ts) হয়, সরাসরি পাঠিয়ে দেওয়া
-        const newResponse = new Response(response.body, response);
-        newResponse.headers.set('Access-Control-Allow-Origin', '*');
-        return newResponse;
-
-      } catch (e) {
-        return new Response("Failed to fetch stream. Check if IP/Port is active. Error: " + e.message, { status: 502 });
-      }
+      // আসল লিংকে রিডাইরেক্ট করা (302 Found)
+      // এটি ইউজারকে আসল সার্ভারে পাঠিয়ে দেবে, তাই আপনার ব্যান্ডউইথ খরচ হবে না
+      return Response.redirect(data.url, 302);
     }
 
-    // হোমপেজ মেসেজ
-    return new Response("Stream Proxy is Running. Go to /admin to manage channels.", { status: 200 });
+    // ================================================================
+    // লজিক ৩: অ্যাডমিন প্যানেল এবং API
+    // ================================================================
+    if (url.pathname === '/admin') return handleAdminPage();
+    if (url.pathname === '/api/add' && request.method === 'POST') return handleAddChannel(request, env);
+    if (url.pathname === '/api/delete' && request.method === 'POST') return handleDeleteChannel(request, env);
+    if (url.pathname === '/api/list') return handleListChannels(env);
+
+    // হোমপেজ
+    return new Response(`Your Playlist URL: ${url.origin}/playlist.m3u\n\nGo to /admin to manage channels.`, { status: 200 });
   }
 };
 
-// ================= HELPER FUNCTIONS =================
+// ------------------------------------------------------------------
+// হেল্পার ফাংশন: প্লেলিস্ট তৈরি করা
+// ------------------------------------------------------------------
+async function handlePlaylistGenerator(env, origin) {
+  const list = await env.CHANNELS1.list();
+  
+  // M3U হেডলাইন
+  let m3uContent = '#EXTM3U\n';
 
-// M3U8 ফাইলের ভেতরের লিংকগুলো প্রক্সির লিংকে পরিবর্তন করা
-function rewriteM3u8(content, workerOrigin, channelName) {
-  const lines = content.split('\n');
-  const newLines = lines.map(line => {
-    line = line.trim();
-    if (!line) return line; // খালি লাইন বাদ
-    
-    // যদি লাইনটি কমেন্ট (#) না হয়, তার মানে এটি একটি লিংক (TS বা অন্য m3u8)
-    if (!line.startsWith('#')) {
-      // আমরা ফাইলের নাম বা লিংকের আগে আমাদের ওয়ার্কারের পাথ বসিয়ে দিচ্ছি
-      return `${workerOrigin}/play/${channelName}/${line}`;
+  for (const key of list.keys) {
+    const dataStr = await env.CHANNELS1.get(key.name);
+    if (dataStr) {
+      const data = JSON.parse(dataStr);
+      
+      // M3U ফরম্যাট তৈরি করা
+      // #EXTINF:-1 tvg-id="name" tvg-logo="url" group-title="group",Title
+      m3uContent += `#EXTINF:-1 tvg-id="${data.title}" tvg-name="${data.title}" tvg-logo="${data.logo}" group-title="${data.group}",${data.title}\n`;
+      
+      // আমাদের রিডাইরেক্ট লিংক বসানো
+      m3uContent += `${origin}/play/${key.name}\n`;
     }
-    return line;
+  }
+
+  return new Response(m3uContent, {
+    headers: {
+      'Content-Type': 'text/plain; charset=utf-8',
+      'Access-Control-Allow-Origin': '*', // যেকোনো প্লেয়ারে চলার জন্য
+      'Cache-Control': 'no-cache' // লাইভ আপডেট পাওয়ার জন্য
+    }
   });
-  return newLines.join('\n');
 }
 
+// ------------------------------------------------------------------
+// হেল্পার ফাংশন: অ্যাডমিন প্যানেল HTML
+// ------------------------------------------------------------------
+async function handleAdminPage() {
+  const html = `
+  <!DOCTYPE html>
+  <html>
+  <head>
+    <title>IPTV Manager</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <style>
+      body { font-family: 'Segoe UI', sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; background: #f0f2f5; }
+      .card { background: white; padding: 25px; border-radius: 10px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); }
+      h2, h3 { text-align: center; color: #333; margin-top:0; }
+      input, select, button { width: 100%; padding: 12px; margin: 8px 0; border: 1px solid #ccc; border-radius: 5px; box-sizing: border-box; }
+      button { background: #0070f3; color: white; border: none; font-weight: bold; cursor: pointer; transition: 0.2s; }
+      button:hover { background: #0051a2; }
+      .row { display: flex; gap: 10px; }
+      .item { background: #fff; border: 1px solid #ddd; padding: 10px; margin-top: 10px; border-radius: 5px; display: flex; align-items: center; justify-content: space-between; }
+      .item img { height: 40px; width: 40px; object-fit: contain; margin-right: 15px; border-radius: 4px; border: 1px solid #eee; }
+      .hidden { display: none; }
+      .link-box { background: #e6f7ff; padding: 15px; border: 1px solid #91d5ff; border-radius: 5px; margin-bottom: 20px; text-align: center; }
+      .link-box a { color: #0050b3; font-weight: bold; word-break: break-all; }
+    </style>
+  </head>
+  <body>
+    <div class="card">
+      <h2>📡 Playlist Controller</h2>
 
-// ================= ADMIN PANEL UI & API =================
+      <div id="loginSection">
+        <input type="password" id="pass" placeholder="Enter Admin Password">
+        <button onclick="login()">Login</button>
+      </div>
 
-async function handleAdminPage(request) {
-    const html = `
-    <!DOCTYPE html>
-    <html>
-    <head>
-        <title>Stream Admin Panel</title>
-        <meta name="viewport" content="width=device-width, initial-scale=1">
-        <style>
-            body { font-family: 'Segoe UI', sans-serif; padding: 20px; max-width: 700px; margin: 0 auto; background: #f0f2f5; }
-            .card { background: white; padding: 25px; border-radius: 10px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); margin-bottom: 20px; }
-            h2, h3 { color: #333; margin-top: 0; }
-            input, button { padding: 12px; margin: 8px 0; width: 100%; box-sizing: border-box; border-radius: 6px; border: 1px solid #ccc; font-size: 16px; }
-            button { background: #0070f3; color: white; border: none; cursor: pointer; font-weight: bold; transition: 0.3s; }
-            button:hover { background: #0051a2; }
-            .btn-delete { background: #ff4d4f; width: auto; padding: 8px 15px; font-size: 14px; margin-top: 5px;}
-            .btn-delete:hover { background: #d9363e; }
-            .item { border-bottom: 1px solid #eee; padding: 15px 0; }
-            .item:last-child { border-bottom: none; }
-            code { background: #e6f7ff; padding: 5px; display: block; margin-top: 5px; border: 1px solid #91d5ff; border-radius: 4px; color: #0050b3; word-break: break-all; }
-            .hidden { display: none; }
-            label { font-weight: bold; font-size: 14px; color: #555; }
-        </style>
-    </head>
-    <body>
-        <div class="card">
-            <h2 style="text-align:center;">📺 Stream Control Panel</h2>
-            
-            <div id="loginSection">
-                <input type="password" id="pass" placeholder="Enter Admin Password">
-                <button onclick="checkPass()">Login to Dashboard</button>
-            </div>
-
-            <div id="mainSection" class="hidden">
-                <div style="background: #e6fffa; padding: 10px; border-radius: 5px; border: 1px solid #b5f5ec; margin-bottom: 15px;">
-                    <strong>System Status:</strong> Proxy is Active <span style="color:green">●</span>
-                </div>
-
-                <h3>➕ Add New Channel</h3>
-                <label>Channel Name (e.g., sports, pogo):</label>
-                <input type="text" id="cName" placeholder="Enter name without spaces">
-                
-                <label>Original M3U8 URL:</label>
-                <input type="text" id="cUrl" placeholder="http://ip:port/path/index.m3u8">
-                
-                <button onclick="addChannel()">Add Channel</button>
-
-                <h3 style="margin-top:30px;">📋 Channel List</h3>
-                <div id="list">Loading...</div>
-            </div>
+      <div id="mainSection" class="hidden">
+        
+        <div class="link-box">
+          <span>Your M3U Playlist URL:</span><br>
+          <a href="#" target="_blank" id="playLink">Loading...</a>
         </div>
 
-        <script>
-            const API_PASS = "${ADMIN_PASSWORD}"; 
+        <h3>Add New Channel</h3>
+        
+        <div class="row">
+          <input type="text" id="cTitle" placeholder="Channel Name (e.g. T Sports)">
+          <input type="text" id="cGroup" placeholder="Category (e.g. Sports)">
+        </div>
+        
+        <input type="text" id="cLogo" placeholder="Logo URL (Optional)">
+        <input type="text" id="cUrl" placeholder="Stream URL (http://ip:port/token...)">
+        
+        <button onclick="addChannel()">Add to Playlist</button>
 
-            function checkPass() {
-                if(document.getElementById('pass').value === API_PASS) {
-                    document.getElementById('loginSection').classList.add('hidden');
-                    document.getElementById('mainSection').classList.remove('hidden');
-                    loadChannels();
-                } else { alert('Incorrect Password!'); }
-            }
+        <h3 style="margin-top:30px; border-top:1px solid #eee; padding-top:20px;">Manage Channels</h3>
+        <div id="list">Loading...</div>
+      </div>
+    </div>
 
-            async function addChannel() {
-                const name = document.getElementById('cName').value.trim();
-                const url = document.getElementById('cUrl').value.trim();
-                if(!name || !url) return alert('Please fill all fields');
-                
-                const btn = document.querySelector('button[onclick="addChannel()"]');
-                btn.innerText = 'Adding...';
-                
-                await fetch('/api/add', {
-                    method: 'POST',
-                    body: JSON.stringify({name, url})
-                });
-                
-                document.getElementById('cName').value = '';
-                document.getElementById('cUrl').value = '';
-                btn.innerText = 'Add Channel';
-                loadChannels();
-            }
+    <script>
+      const API_PASS = "${ADMIN_PASSWORD}";
+      
+      function login() {
+        if(document.getElementById('pass').value === API_PASS) {
+          document.getElementById('loginSection').classList.add('hidden');
+          document.getElementById('mainSection').classList.remove('hidden');
+          const plUrl = window.location.origin + '/playlist.m3u';
+          document.getElementById('playLink').href = plUrl;
+          document.getElementById('playLink').innerText = plUrl;
+          loadChannels();
+        } else { alert('Incorrect Password'); }
+      }
 
-            async function deleteChannel(name) {
-                if(!confirm('Are you sure you want to delete "' + name + '"?')) return;
-                await fetch('/api/delete', {
-                    method: 'POST',
-                    body: JSON.stringify({name})
-                });
-                loadChannels();
-            }
+      async function addChannel() {
+        const title = document.getElementById('cTitle').value.trim();
+        const group = document.getElementById('cGroup').value.trim() || 'General';
+        const logo = document.getElementById('cLogo').value.trim() || 'https://via.placeholder.com/50';
+        const url = document.getElementById('cUrl').value.trim();
 
-            async function loadChannels() {
-                const res = await fetch('/api/list');
-                const channels = await res.json();
-                const list = document.getElementById('list');
-                list.innerHTML = '';
-                
-                if(Object.keys(channels).length === 0) {
-                    list.innerHTML = '<p style="color:#777; text-align:center;">No channels added yet.</p>';
-                    return;
-                }
+        if(!title || !url) return alert('Name and URL are required!');
 
-                for (const [name, url] of Object.entries(channels)) {
-                    const proxyLink = window.location.origin + '/play/' + name;
-                    list.innerHTML += \`
-                        <div class="item">
-                            <div style="font-size:18px; font-weight:bold; color: #222;">\${name}</div>
-                            <div style="font-size:12px; color: #666; margin-bottom:5px;">Original: \${url}</div>
-                            
-                            <strong>Proxy Link:</strong>
-                            <code>\${proxyLink}</code>
-                            
-                            <button class="btn-delete" onclick="deleteChannel('\${name}')">Delete</button>
-                        </div>
-                    \`;
-                }
-            }
-        </script>
-    </body>
-    </html>
-    `;
-    return new Response(html, { headers: { 'Content-Type': 'text/html' } });
+        // একটি ইউনিক ID তৈরি করা (নাম থেকে স্পেস সরিয়ে)
+        const id = title.toLowerCase().replace(/[^a-z0-9]/g, '-');
+
+        const data = { name: id, title, group, logo, url };
+        
+        // বাটন লোডিং ইফেক্ট
+        const btn = document.querySelector('button[onclick="addChannel()"]');
+        const originalText = btn.innerText;
+        btn.innerText = 'Saving...';
+
+        await fetch('/api/add', { method: 'POST', body: JSON.stringify(data) });
+        
+        // ইনপুট ক্লিয়ার
+        document.getElementById('cTitle').value = '';
+        document.getElementById('cUrl').value = '';
+        btn.innerText = originalText;
+        loadChannels();
+      }
+
+      async function deleteChannel(id) {
+        if(!confirm('Delete this channel?')) return;
+        await fetch('/api/delete', { method: 'POST', body: JSON.stringify({name: id}) });
+        loadChannels();
+      }
+
+      async function loadChannels() {
+        const res = await fetch('/api/list');
+        const list = await res.json();
+        const container = document.getElementById('list');
+        container.innerHTML = '';
+
+        if(Object.keys(list).length === 0) {
+            container.innerHTML = '<p style="text-align:center; color:#888;">No channels found.</p>';
+            return;
+        }
+
+        for (const key in list) {
+          const item = JSON.parse(list[key]);
+          container.innerHTML += \`
+            <div class="item">
+              <div style="display:flex; align-items:center;">
+                <img src="\${item.logo}" onerror="this.src='https://via.placeholder.com/40'">
+                <div>
+                  <div style="font-weight:bold; font-size:16px;">\${item.title}</div>
+                  <div style="font-size:12px; color:#666;">Group: \${item.group}</div>
+                </div>
+              </div>
+              <button onclick="deleteChannel('\${item.name}')" style="width:auto; background:#ff4d4f; padding:8px 15px; margin:0;">Delete</button>
+            </div>
+          \`;
+        }
+      }
+    </script>
+  </body>
+  </html>
+  `;
+  return new Response(html, { headers: { 'Content-Type': 'text/html' } });
 }
 
-// ================= API HANDLERS (Database: CHANNELS1) =================
+// ------------------------------------------------------------------
+// API হ্যান্ডলারস (KV ডাটাবেস এর সাথে কথা বলার জন্য)
+// ------------------------------------------------------------------
 
 async function handleAddChannel(req, env) {
-    const data = await req.json();
-    // এখানে CHANNELS1 ব্যবহার করা হচ্ছে
-    await env.CHANNELS1.put(data.name, data.data || data.url);
-    return new Response("Added", {status: 200});
+  const data = await req.json();
+  // ডাটাবেসে JSON স্ট্রিং হিসেবে সেভ করা
+  await env.CHANNELS1.put(data.name, JSON.stringify(data));
+  return new Response("OK");
 }
 
 async function handleDeleteChannel(req, env) {
-    const data = await req.json();
-    // এখানে CHANNELS1 ব্যবহার করা হচ্ছে
-    await env.CHANNELS1.delete(data.name);
-    return new Response("Deleted", {status: 200});
+  const data = await req.json();
+  await env.CHANNELS1.delete(data.name);
+  return new Response("OK");
 }
 
 async function handleListChannels(env) {
-    // এখানে CHANNELS1 ব্যবহার করা হচ্ছে
-    const list = await env.CHANNELS1.list();
-    const channels = {};
-    for(const key of list.keys) {
-        channels[key.name] = await env.CHANNELS1.get(key.name);
-    }
-    return new Response(JSON.stringify(channels), {
-        headers: { 'Content-Type': 'application/json' }
-    });
+  const list = await env.CHANNELS1.list();
+  const channels = {};
+  for(const key of list.keys) {
+    channels[key.name] = await env.CHANNELS1.get(key.name);
+  }
+  return new Response(JSON.stringify(channels));
 }
