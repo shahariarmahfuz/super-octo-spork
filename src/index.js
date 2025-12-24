@@ -6,7 +6,7 @@ export default {
     const url = new URL(request.url);
 
     // ================================================================
-    // ১. অ্যাডমিন প্যানেল এবং API (আগের মতোই)
+    // ১. অ্যাডমিন প্যানেল এবং API
     // ================================================================
     
     if (url.pathname === '/admin') {
@@ -23,80 +23,79 @@ export default {
     }
 
     // ================================================================
-    // ২. ভিডিও স্ট্রিমিং লজিক (সম্পূর্ণ নতুন এবং শক্তিশালী)
+    // ২. ভিডিও স্ট্রিমিং লজিক (আপডেট করা হয়েছে)
     // ================================================================
     
     if (url.pathname.startsWith('/play/')) {
       const parts = url.pathname.split('/');
-      const channelName = parts[2];
       
-      // বাকী অংশটুকু (যেমন: tracks-v1a1/mono.ts.m3u8)
+      // চ্যানেলের নাম বের করা (যেমন: Attn.m3u8)
+      let channelName = parts[2];
+      
+      // নতুন লজিক: যদি নামের শেষে .m3u8 থাকে, সেটা মুছে ফেলা হবে ডাটাবেস চেক করার জন্য
+      if (channelName.endsWith('.m3u8')) {
+          channelName = channelName.replace('.m3u8', '');
+      }
+
+      // পাথের বাকি অংশ (যেমন: tracks/v1/segment.ts)
       const relativePath = parts.slice(3).join('/'); 
 
-      // ১. আসল মেইন লিংকটি ডাটাবেস থেকে আনা
       const rootUrlStr = await env.CHANNELS1.get(channelName);
 
       if (!rootUrlStr) {
-        return new Response("Channel not found in Database.", { status: 404 });
+        return new Response("Channel not found.", { status: 404 });
       }
 
-      // ২. টার্গেট URL তৈরি করা (যেটা আমরা এখন ফেচ করব)
       let targetUrl;
-      let rootBase; // এটি মেইন ফোল্ডারের ঠিকানা
+      let rootBase;
 
       try {
         const rootObj = new URL(rootUrlStr);
-        // মেইন লিংকের বেস পাথ বের করা (যেমন: http://site.com/folder/)
         rootBase = rootObj.href.substring(0, rootObj.href.lastIndexOf('/') + 1);
 
         if (!relativePath) {
-            // যদি সরাসরি চ্যানেল প্লে করা হয়
             targetUrl = rootUrlStr;
         } else {
-            // যদি ভেতরের কোনো ফাইল চাওয়া হয়, তাহলে মেইন বেস-এর সাথে জোড়া লাগানো
             targetUrl = new URL(relativePath, rootBase).href;
         }
       } catch (e) {
-        return new Response("Invalid URL Configuration", { status: 500 });
+        return new Response("URL Error", { status: 500 });
       }
 
-      // ৩. অরিজিনাল সার্ভার থেকে ডাটা আনা
       try {
         const response = await fetch(targetUrl, {
           headers: {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
             'Referer': new URL(targetUrl).origin
           }
         });
 
         if (!response.ok) {
-            return new Response(`Source Error: ${response.status}`, { status: response.status });
+            return new Response("Source Error: " + response.status, { status: response.status });
         }
 
-        // ৪. যদি M3U8 ফাইল হয়, তবে রিরাইট (Rewrite) করতে হবে
-        if (targetUrl.includes('.m3u8') || response.headers.get('Content-Type')?.includes('mpegurl') || response.headers.get('Content-Type')?.includes('application/x-mpegURL')) {
-          
+        if (targetUrl.includes('.m3u8') || response.headers.get('Content-Type')?.includes('mpegurl')) {
           let m3u8Text = await response.text();
           
-          // এখানে ম্যাজিক ফাংশন কল করা হচ্ছে
+          // রিরাইট করার সময় channelName এর সাথে .m3u8 যোগ করার দরকার নেই, 
+          // কারণ ইন্টারনাল সেগমেন্টগুলো ফোল্ডার স্ট্রাকচার ফলো করে।
+          // তবে ইউজার মেইন লিংক .m3u8 দিয়েই চালাবে।
           m3u8Text = rewriteM3u8(m3u8Text, url.origin, channelName, targetUrl, rootBase);
 
           return new Response(m3u8Text, {
             headers: {
               'Content-Type': 'application/vnd.apple.mpegurl',
-              'Access-Control-Allow-Origin': '*',
-              'Cache-Control': 'no-cache'
+              'Access-Control-Allow-Origin': '*'
             }
           });
         }
 
-        // ৫. যদি .ts বা অন্য ফাইল হয়, সরাসরি দিয়ে দেওয়া হবে
         const newRes = new Response(response.body, response);
         newRes.headers.set('Access-Control-Allow-Origin', '*');
         return newRes;
 
       } catch (e) {
-        return new Response(`Worker Error: ${e.message}`, { status: 500 });
+        return new Response("Error", { status: 500 });
       }
     }
 
@@ -104,47 +103,36 @@ export default {
   }
 };
 
-// ================= HELPER FUNCTIONS (নতুন লজিক) =================
+// ================= HELPER FUNCTIONS =================
 
 function rewriteM3u8(content, workerOrigin, channelName, currentFileUrl, rootBaseUrl) {
   const lines = content.split('\n');
   const newLines = lines.map(line => {
-    // স্পেস বা অপ্রয়োজনীয় ক্যারেক্টার রিমুভ (খুবই জরুরি)
     line = line.trim();
     if (!line) return line;
-    
-    // কমেন্ট লাইন বা ট্যাগ ইগনোর করা
-    if (line.startsWith('#')) {
-      return line;
-    }
+    if (line.startsWith('#')) return line;
 
-    // লজিক: লাইনের লিংকটি যেখানেই থাক, সেটার "আসল পূর্ণ ঠিকানা" (Absolute URL) বের করা
     try {
         const absoluteUrl = new URL(line, currentFileUrl).href;
 
-        // চেক করা: এই লিংকটি কি আমাদের মেইন সার্ভারের ভেতরেই আছে?
         if (absoluteUrl.startsWith(rootBaseUrl)) {
-            // যদি ভেতরে থাকে, তাহলে "rootBaseUrl" বাদ দিয়ে বাকীটুকু (Relative Path) বের করা
             const newRelativePath = absoluteUrl.replace(rootBaseUrl, '');
-            
-            // আমাদের প্রোক্সি লিংক তৈরি
+            // খেয়াল করুন: এখানে .m3u8 দেওয়া হচ্ছে না, কারণ এটি ইন্টারনাল পাথ।
+            // কিন্তু মেইন প্লেয়ার লিংক .m3u8 দিয়েই কাজ করবে।
             return `${workerOrigin}/play/${channelName}/${newRelativePath}`;
         } else {
-            // যদি অন্য কোনো সার্ভারে রিডাইরেক্ট করে (যেমন অন্য CDN), তাহলে সরাসরি সেই লিংক বসিয়ে দেওয়া
-            // এতে প্লেয়ার সরাসরি সেখান থেকে চালাবে (এতে ভিডিও লোড দ্রুত হয়)
             return absoluteUrl;
         }
     } catch (e) {
-        return line; // কোনো সমস্যা হলে যা আছে তাই থাকবে
+        return line;
     }
   });
   return newLines.join('\n');
 }
 
-// ================= ADMIN & API (অপরিবর্তিত) =================
+// ================= ADMIN PAGE (আপডেট করা হয়েছে) =================
 
 async function handleAdminPage(request) {
-    // আগের অ্যাডমিন কোডই থাকবে, এখানে চেঞ্জ নেই
     const html = `
     <!DOCTYPE html>
     <html>
@@ -158,7 +146,7 @@ async function handleAdminPage(request) {
             button { background: #0070f3; color: white; border: none; cursor: pointer; }
             button:hover { background: #0051a2; }
             .item { border-bottom: 1px solid #eee; padding: 10px 0; }
-            code { background: #eee; padding: 2px 5px; display: block; margin-top: 5px; word-break: break-all; }
+            code { background: #eee; padding: 2px 5px; display: block; margin-top: 5px; word-break: break-all; color: #d63384; }
             .hidden { display: none; }
             h3 { margin-top: 0; }
         </style>
@@ -172,9 +160,10 @@ async function handleAdminPage(request) {
             </div>
             <div id="mainSection" class="hidden">
                 <h3>Add Channel</h3>
-                <input type="text" id="cName" placeholder="Name (e.g. sports)">
+                <input type="text" id="cName" placeholder="Name (e.g. Attn)">
                 <input type="text" id="cUrl" placeholder="Original M3U8 Link">
                 <button onclick="addChannel()">Add Channel</button>
+
                 <h3 style="margin-top:20px;">Channel List</h3>
                 <div id="list">Loading...</div>
             </div>
@@ -208,7 +197,9 @@ async function handleAdminPage(request) {
                 const list = document.getElementById('list');
                 list.innerHTML = '';
                 for (const [name, url] of Object.entries(channels)) {
-                    const proxyLink = window.location.origin + '/play/' + name;
+                    // এইখানে .m3u8 যোগ করা হয়েছে
+                    const proxyLink = window.location.origin + '/play/' + name + '.m3u8';
+                    
                     list.innerHTML += \`
                         <div class="item">
                             <div style="font-weight:bold; color: #333;">\${name}</div>
@@ -226,6 +217,7 @@ async function handleAdminPage(request) {
     return new Response(html, { headers: { 'Content-Type': 'text/html' } });
 }
 
+// ================= API HANDLERS =================
 async function handleAddChannel(req, env) {
     const data = await req.json();
     await env.CHANNELS1.put(data.name, data.data || data.url);
