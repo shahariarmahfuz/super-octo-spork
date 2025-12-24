@@ -2,7 +2,7 @@
 #EXTINF:-1 tvg-logo="http://203.18.158.217:5010/static/uploads/2b150e0478f647cab8fe688582dec39f.png" group-title="General", Deepto TV
 https://super-octo-spork.mahfuzfshahariar.workers.dev/play/Attn.m3u8
 #EXTINF:-1 tvg-logo="http://203.18.158.217:5010/static/uploads/f28d76151c2e4daea7ddec7ca58f9175.png" group-title="General", Bangla Vision
-http://203.18.158.217:5010/neko/token=3e6518f0545c9d5215eb70ef83a87a97/id=2/index.m3u8
+https://super-octo-spork.mahfuzfshahariar.workers.dev/play/Nic.m3u8
 #EXTINF:-1 tvg-logo="http://203.18.158.217:5010/static/uploads/a40b521995c9418db94dca7f2a09d6e5.png" group-title="General", BTV
 http://203.18.158.217:5010/neko/token=2183490071ba3cdd20f83118c7df02ab/id=3/index.m3u8
 #EXTINF:-1 tvg-logo="http://203.18.158.217:5010/static/uploads/30fa13b0ad9140ddb113427f72f1dadd.png" group-title="General", NTV
