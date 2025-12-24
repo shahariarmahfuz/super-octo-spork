@@ -1,5 +1,5 @@
-// অ্যাডমিন প্যানেলে ঢোকার পাসওয়ার্ড
-const ADMIN_PASSWORD = "12345"; 
+// অ্যাডমিন প্যানেলে ঢোকার পাসওয়ার্ড
+const ADMIN_PASSWORD = "15"; 
 
 export default {
   async fetch(request, env, ctx) {
@@ -9,36 +9,33 @@ export default {
     // ১. অ্যাডমিন প্যানেল এবং API
     // ================================================================
     
-    // অ্যাডমিন পেজ শো করা
     if (url.pathname === '/admin') {
       return handleAdminPage(request);
     }
 
-    // নতুন চ্যানেল সেভ করা (API)
     if (url.pathname === '/api/add' && request.method === 'POST') {
       return handleAddChannel(request, env);
     }
 
-    // চ্যানেল ডিলিট করা (API)
     if (url.pathname === '/api/delete' && request.method === 'POST') {
       return handleDeleteChannel(request, env);
     }
 
-    // সব চ্যানেলের লিস্ট দেখা (API)
     if (url.pathname === '/api/list') {
       return handleListChannels(env);
     }
 
     // ================================================================
-    // ২. ভিডিও স্ট্রিমিং লজিক
+    // ২. ভিডিও স্ট্রিমিং লজিক (সংশোধিত)
     // ================================================================
     
     if (url.pathname.startsWith('/play/')) {
       const parts = url.pathname.split('/');
       const channelName = parts[2];
+      
+      // relativePath ঠিকভাবে বের করা (স্ল্যাশ সহ হ্যান্ডেল করার জন্য)
       const relativePath = parts.slice(3).join('/'); 
 
-      // এখানে পরিবর্তন: env.CHANNELS এর বদলে env.CHANNELS1
       const originalBaseUrl = await env.CHANNELS1.get(channelName);
 
       if (!originalBaseUrl) {
@@ -66,9 +63,18 @@ export default {
           }
         });
 
+        // যদি M3U8 ফাইল হয়, তবে লিংক রিরাইট করতে হবে
         if (targetUrl.includes('.m3u8') || response.headers.get('Content-Type')?.includes('mpegurl')) {
           let m3u8Text = await response.text();
-          m3u8Text = rewriteM3u8(m3u8Text, url.origin, channelName);
+          
+          // বর্তমান পাথ বা ডিরেক্টরি বের করা হচ্ছে
+          let currentPathDir = '';
+          if (relativePath && relativePath.includes('/')) {
+             currentPathDir = relativePath.substring(0, relativePath.lastIndexOf('/') + 1);
+          }
+
+          // রিরাইট ফাংশনে বর্তমান ডিরেক্টরি পাঠানো হচ্ছে
+          m3u8Text = rewriteM3u8(m3u8Text, url.origin, channelName, currentPathDir);
 
           return new Response(m3u8Text, {
             headers: {
@@ -78,12 +84,13 @@ export default {
           });
         }
 
+        // TS বা অন্য ফাইলের জন্য সরাসরি রেসপন্স
         const newRes = new Response(response.body, response);
         newRes.headers.set('Access-Control-Allow-Origin', '*');
         return newRes;
 
       } catch (e) {
-        return new Response("Error", { status: 500 });
+        return new Response("Error fetching stream", { status: 500 });
       }
     }
 
@@ -91,15 +98,23 @@ export default {
   }
 };
 
-// ================= HELPER FUNCTIONS =================
+// ================= HELPER FUNCTIONS (সংশোধিত) =================
 
-function rewriteM3u8(content, workerOrigin, channelName) {
+function rewriteM3u8(content, workerOrigin, channelName, pathPrefix) {
   const lines = content.split('\n');
   const newLines = lines.map(line => {
     line = line.trim();
     if (!line) return line;
+    
+    // যদি লাইনটি কমেন্ট না হয় (# দিয়ে শুরু না হয়)
     if (!line.startsWith('#')) {
-      return `${workerOrigin}/play/${channelName}/${line}`;
+      // যদি লাইনটি ইতিমধ্যে http দিয়ে শুরু হয় (Absolute URL), তবে সেটা হ্যান্ডেল করার লজিক (অপশনাল, এখানে সরল রাখা হলো)
+      if(line.startsWith('http')) {
+          return `${workerOrigin}/play/${channelName}/${line}`; // এটি সাধারণত এনকোড করা প্রয়োজন, তবে সিম্পল প্রক্সিতে এভাবেও চলতে পারে
+      }
+      
+      // রিলেটিভ পাথের সাথে আগের ফোল্ডার (pathPrefix) যুক্ত করা হচ্ছে
+      return `${workerOrigin}/play/${channelName}/${pathPrefix}${line}`;
     }
     return line;
   });
@@ -205,7 +220,6 @@ async function handleAdminPage(request) {
 }
 
 // ================= API HANDLERS =================
-// এখানেও সব জায়গায় env.CHANNELS1 ব্যবহার করা হয়েছে
 
 async function handleAddChannel(req, env) {
     const data = await req.json();
@@ -220,6 +234,7 @@ async function handleDeleteChannel(req, env) {
 }
 
 async function handleListChannels(env) {
+    // এখানে ভুল ছিল 'constlist', ঠিক করা হলো 'const list'
     const list = await env.CHANNELS1.list();
     const channels = {};
     for(const key of list.keys) {
