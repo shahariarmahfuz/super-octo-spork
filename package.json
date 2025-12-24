@@ -1,0 +1,11 @@
+{
+  "name": "m3u8-proxy-worker",
+  "version": "1.0.0",
+  "description": "Proxy for single m3u8 channel",
+  "main": "src/index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "author": "",
+  "license": "ISC"
+}
